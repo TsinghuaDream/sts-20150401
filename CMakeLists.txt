@@ -1,15 +1,37 @@
 
-cmake_minimum_required(VERSION 3.5 FATAL_ERROR)
+cmake_minimum_required(VERSION 3.12 FATAL_ERROR)
+
+# Enable find_package to use <PackageName>_ROOT variables
+cmake_policy(SET CMP0074 NEW)
 
 project(alibabacloud_sts20150401 VERSION "1.0.0")
 
+# Build type options
+option(BUILD_SHARED_LIBS "Build shared libraries" ON)
+option(BUILD_TESTS "Build tests" OFF)
+
 # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< General set up >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> #
-set(CMAKE_CXX_STANDARD 11)
-set(CMAKE_CXX_EXTENSIONS OFF)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
-set(CMAKE_INSTALL_PREFIX "${PROJECT_SOURCE_DIR}/${PROJECT_NAME}_build")
+if (CMAKE_CXX_STANDARD)
+   SET(CMAKE_CXX_STANDARD ${CMAKE_CXX_STANDARD})
+   message(STATUS "Using C++ standard: ${CMAKE_CXX_STANDARD}")
+else()
+   SET(CMAKE_CXX_STANDARD 11)
+   message(STATUS "Using C++ standard: 11")
+endif()
+
+# Allow user to override CMAKE_INSTALL_PREFIX
+if(NOT CMAKE_INSTALL_PREFIX OR CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
+  set(CMAKE_INSTALL_PREFIX "${PROJECT_SOURCE_DIR}/${PROJECT_NAME}_build" CACHE PATH "Install path" FORCE)
+endif()
+
 SET(CMAKE_FIND_LIBRARY_SUFFIXES "${CMAKE_FIND_LIBRARY_SUFFIXES}" "_d.dylib")
+
+# Prefer static libraries when BUILD_SHARED_LIBS=OFF
+if(NOT BUILD_SHARED_LIBS)
+  set(OPENSSL_USE_STATIC_LIBS ON)
+  list(INSERT CMAKE_FIND_LIBRARY_SUFFIXES 0 ".a")
+endif()
+
 message("C++ compiler flags: ${CMAKE_CXX_FLAGS}")
 
 if (CMAKE_CXX_COMPILER_LOADED)
@@ -28,11 +50,12 @@ include_directories(${CMAKE_SOURCE_DIR}/include)
 set(SOURCE_FILES
         src/Client.cpp)
 
-add_library(${PROJECT_NAME} SHARED ${SOURCE_FILES})
+add_library(${PROJECT_NAME} ${SOURCE_FILES})
         
 target_include_directories(${PROJECT_NAME}
-        PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+        PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>)
 
 set_target_properties(${PROJECT_NAME}
         PROPERTIES
@@ -46,8 +69,33 @@ set_target_properties(${PROJECT_NAME}
 
 # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< External set up >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> #
 add_subdirectory(external)
+
+# Find dependencies with proper target support
 find_package(OpenSSL REQUIRED)
-find_library(CURL_LIB curl)
+if(NOT TARGET OpenSSL::SSL)
+  message(FATAL_ERROR "OpenSSL::SSL target not found")
+endif()
+
+# Ensure downstream dependency targets see OpenSSL headers
+if(OPENSSL_INCLUDE_DIR)
+  if(TARGET darabonba_core)
+    target_include_directories(darabonba_core PUBLIC ${OPENSSL_INCLUDE_DIR})
+  endif()
+  if(TARGET alibabacloud_credential)
+    target_include_directories(alibabacloud_credential PUBLIC ${OPENSSL_INCLUDE_DIR})
+  endif()
+endif()
+
+find_package(CURL)
+if(TARGET CURL::libcurl)
+  set(CURL_TARGET CURL::libcurl)
+elseif(CURL_LIBRARIES)
+  set(CURL_TARGET ${CURL_LIBRARIES})
+else()
+  find_library(CURL_LIB curl REQUIRED)
+  set(CURL_TARGET ${CURL_LIB})
+endif()
+
 if(CMAKE_HOST_WIN32)
   ExternalProject_Get_Property(curl INSTALL_DIR)
     set(curl_install_dir ${INSTALL_DIR})
@@ -64,32 +112,28 @@ if(CMAKE_HOST_WIN32)
             optimized ${curl_install_dir}/lib/libcurl.lib
             darabonba_core
             alibabacloud_open_api_v2
-            alibabacloud_credential
-            
-            )
+            alibabacloud_credential)
     target_compile_definitions(${PROJECT_NAME}
             PRIVATE CURL_STATICLIB
             _CRT_SECURE_NO_WARNINGS)
 elseif(APPLE)
-  find_library(CFLIB CoreFoundation)
-  find_library(UTIL_LIB alibabacloud_sts20150401 ${CMAKE_CURRENT_SOURCE_DIR}/deps/lib)
-  target_link_libraries(${PROJECT_NAME} 
+  find_library(CFLIB CoreFoundation REQUIRED)
+  target_link_libraries(${PROJECT_NAME}
       OpenSSL::SSL OpenSSL::Crypto
       ${CFLIB}
-      ${CURL_LIB} 
+      ${CURL_TARGET}
       darabonba_core
       alibabacloud_open_api_v2
-            alibabacloud_credential
-            )
+      alibabacloud_credential)
   target_compile_definitions(${PROJECT_NAME} PRIVATE GUID_CFUUID)
 else()
-  target_link_libraries(${PROJECT_NAME} 
+  # Linux
+  target_link_libraries(${PROJECT_NAME}
       OpenSSL::SSL OpenSSL::Crypto
-      ${CURL_LIB} 
+      ${CURL_TARGET}
       darabonba_core
       alibabacloud_open_api_v2
-            alibabacloud_credential
-            )
+      alibabacloud_credential)
 endif()
 
 
@@ -149,10 +193,47 @@ install(
         LIBRARY
         DESTINATION ${INSTALL_LIBDIR}
         COMPONENT lib
-        PUBLIC_HEADER
-        DESTINATION ${INSTALL_INCLUDEDIR}/alibabacloud
-        COMPONENT dev
 )
+
+# Install header files
+install(
+        DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/
+        DESTINATION ${INSTALL_INCLUDEDIR}
+        COMPONENT dev
+        FILES_MATCHING PATTERN "*.hpp"
+)
+
+# Install dependency headers if built via FetchContent
+# FetchContent sets <lowercaseName>_SOURCE_DIR variables
+if(DEFINED _darabonba_core_SOURCE_DIR)
+  message(STATUS "Installing darabonba_core headers from: ${_darabonba_core_SOURCE_DIR}")
+  install(
+    DIRECTORY ${_darabonba_core_SOURCE_DIR}/include/
+    DESTINATION ${INSTALL_INCLUDEDIR}
+    COMPONENT dev
+    FILES_MATCHING PATTERN "*.hpp" PATTERN "*.h"
+  )
+endif()
+
+if(DEFINED _alibabacloud_credential_SOURCE_DIR)
+  message(STATUS "Installing credential headers from: ${_alibabacloud_credential_SOURCE_DIR}")
+  install(
+    DIRECTORY ${_alibabacloud_credential_SOURCE_DIR}/include/
+    DESTINATION ${INSTALL_INCLUDEDIR}
+    COMPONENT dev
+    FILES_MATCHING PATTERN "*.hpp"
+  )
+endif()
+
+if(DEFINED _alibabacloud_open_api_v2_SOURCE_DIR)
+  message(STATUS "Installing open-api-v2 headers from: ${_alibabacloud_open_api_v2_SOURCE_DIR}")
+  install(
+    DIRECTORY ${_alibabacloud_open_api_v2_SOURCE_DIR}/include/
+    DESTINATION ${INSTALL_INCLUDEDIR}
+    COMPONENT dev
+    FILES_MATCHING PATTERN "*.hpp"
+  )
+endif()
 
 # Install cmake config
 install(
