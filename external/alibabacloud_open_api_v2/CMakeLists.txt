@@ -9,7 +9,7 @@ else()
   FetchContent_Declare(
     _alibabacloud_open_api_v2
     GIT_REPOSITORY https://github.com/TsinghuaDream/alibabacloud-open-api-v2.git
-    GIT_TAG master
+    GIT_TAG test
     CMAKE_ARGS
       -DENABLE_UNIT_TESTS:BOOL="0")
 
